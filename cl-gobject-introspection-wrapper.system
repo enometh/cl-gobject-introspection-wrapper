@@ -1,0 +1,26 @@
+;;; -*- Mode: LISP; Package: :cl-user; BASE: 10; Syntax: ANSI-Common-Lisp; -*-
+;;;
+;;;   Time-stamp: <>
+;;;   Touched: Wed Oct 12 16:00:35 2022 +0530 <enometh@net.meer>
+;;;   Bugs-To: enometh@net.meer
+;;;   Status: Experimental.  Do not redistribute
+;;;   Copyright (C) 2022 Madhu.  All Rights Reserved.
+;;;
+(in-package "CL-USER")
+
+(defvar *cl-gobject-introspection-wrapper-source-dir*
+  (merge-pathnames "Github/cl-gobject-introspection-wrapper/" (translate-logical-pathname "EXTERN:")))
+(defvar *cl-gobject-introspection-wrapper-binary-dir* (binary-directory *cl-gobject-introspection-wrapper-source-dir*))
+
+(mk:defsystem :cl-gobject-introspection-wrapper
+  :source-pathname *cl-gobject-introspection-wrapper-source-dir*
+  :binary-pathname *cl-gobject-introspection-wrapper-binary-dir*
+  :source-extension "lisp"
+  :depends-on (#:alexandria #:cl-gir #:cl-ppcre)
+  :components ((:file "package")
+               (:file "util")
+               (:file "desc")
+               (:file "macro")))
+
+#+nil
+(mk:oos :cl-gobject-introspection-wrapper :load :compile-during-load t)
