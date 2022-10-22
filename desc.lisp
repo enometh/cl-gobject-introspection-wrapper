@@ -95,6 +95,7 @@
   (declare (ignore namespace))
   (catch 'skip
     (let* ((info (gir::info-of desc))
+           (doc (prin1-to-string desc))
            (name (nstring-upcase (underscores->lisp-name (gir:info-get-name info))))
            (symbol (intern name))
            (args (mapcar (lambda (desc)
@@ -127,23 +128,34 @@
                             #'identity)))
       (if-let ((name-symbol (quoted-name-symbol (cons class (gir:info-get-name info)))))
         `(defun ,name-symbol (instance ,@args)
+           ,doc
            ,(funcall proc-ret-fn `(gir:invoke (instance ',symbol) ,@args)))
         (cond
           ((and (not args)
                 (when-let ((name (scan-to-string +getter-pattern+ name)))
                   `(defun ,(intern (format nil (if (equal ret-types '(boolean)) "~A-~A-P" "~A-~A") class-name name)) (instance)
+                     ,doc
                      ,(funcall proc-ret-fn `(gir:invoke (instance ',symbol)))))))
           ((and args
                 (when-let ((name (scan-to-string +setter-pattern+ name)))
                   `(defun (setf ,(intern (format nil (if (eql (car arg-types) 'boolean) "~A-~A-P" "~A-~A") class-name name))) (value instance)
+                     ,doc
                      (,@(if (cdr args) `(destructuring-bind ,args value) `(symbol-macrolet ((,(car args) value))))
                       ,(funcall proc-ret-fn `(gir:invoke (instance ',symbol) ,@args)))))))
           (t `(defun ,(intern (format nil "~A-~A" class-name name)) (instance ,@(funcall proc-arg-fn args))
+                ,doc
                 ,(funcall proc-ret-fn `(gir:invoke (instance ',symbol) ,@args)))))))))
+
+#+nil
+(multiple-value-setq ($f1 $n1)
+  (transform-constructor-desc (gir:nget-desc gir-test::*glib* "Regex" "new")
+                              gir-test::*glib*
+                              "Regex"))
 
 (defun transform-constructor-desc (desc &optional (namespace *namespace*) (class *class*))
   (catch 'skip
     (let* ((info (gir::info-of desc))
+           (doc (prin1-to-string desc))
            (name (nstring-upcase (underscores->lisp-name (gir:info-get-name info))))
            (symbol (intern name))
            (args (mapcar (lambda (desc)
@@ -155,7 +167,7 @@
                            (camel-case->lisp-symbol class))))
       (let ((body `(gir:invoke (,namespace ,class ',symbol) ,@args)))
         (if-let ((name-symbol (quoted-name-symbol (cons class (gir:info-get-name info)))))
-          (values `(defun ,name-symbol ,args ,body) nil)
+          (values `(defun ,name-symbol ,args ,doc ,body) nil)
           (if-let ((method (ppcre:register-groups-bind (verb prep method) (+constructor-pattern+ name)
                              (declare (ignore verb))
                              (if prep (list prep method) (list method)))))
@@ -164,20 +176,24 @@
                                                (1 (first method))
                                                (2 ""))
                                              class-name))
-                         (&key ,@args) ,body)
+                         (&key ,@args) ,doc ,body)
                     (and method
                          (every (compose #'plusp #'length) method)
                          (mapcar (lambda (str) (subseq str 1)) method)))
-            (values `(defun ,(intern (format nil "~A-~A" class-name name)) ,args ,body) nil)))))))
+            (values `(defun ,(intern (format nil "~A-~A" class-name name)) ,args ,doc ,body) nil)))))))
+
+#+nil
+(merge-constructor-forms (list $f1) (list (gir:nget-desc gir-test::*glib* "Regex" "new")) (list $n1))
 
 (defun merge-constructor-forms (forms descs subst-arg-names)
   (let ((grouped nil))
-    (loop :for (defun-symbol name lambda-list body) :in forms
+    (loop :for (defun-symbol name lambda-list doc body) :in forms
           :for desc :in descs
           :for subst-arg-name :in subst-arg-names
           :when (eq (car lambda-list) '&key)
             :do (pop lambda-list)
-          :do (push (list desc subst-arg-name body)
+          :do (list 'ignorable defun-symbol)
+          :do (push (list desc subst-arg-name doc body)
                     (assoc-value (assoc-value grouped name) lambda-list :test #'equal)))
     (loop :with unmergeable-constructors
           :for (name . arg-groups) :in grouped
@@ -186,18 +202,20 @@
                               (destructuring-bind (args . bodies) arg-group
                                 (if (> (length bodies) 1)
                                     (if (= (length args) 1)
-                                        (loop :for (desc subst-arg-name body) :in bodies
+                                        (loop :for (desc subst-arg-name doc body) :in bodies
+                                              :do (list 'ignorable desc doc body)
                                               :if subst-arg-name
                                                 :collect (let ((subst-symbol (intern (lastcar subst-arg-name))))
-                                                           `((,subst-symbol) (let ((,(first args) ,subst-symbol)) ,body)))
+                                                           `((,subst-symbol) ,doc (let ((,(first args) ,subst-symbol)) ,body)))
                                                   :into result
                                               :else
                                                 :count t :into no-subst-name-count
-                                                :and :collect `(,args ,body) :into result
+                                                :and :collect `(,args ,doc ,body) :into result
                                               :finally
                                                  (assert (<= no-subst-name-count 1))
                                                  (return result))
-                                        (loop :for (desc subst-arg-name body) :in bodies
+                                        (loop :for (desc subst-arg-name doc body) :in bodies
+                                              :do (list 'ignorable doc body)
                                               :if subst-arg-name
                                                 :do (let ((*quoted-name-alist*
                                                             (cons (let ((name (gir:info-get-name (gir::info-of desc))))
@@ -209,15 +227,21 @@
                                                                   *quoted-name-alist*)))
                                                       (push (transform-constructor-desc desc) unmergeable-constructors))
                                               :else
-                                                :collect `(,args ,(third bodies))))
-                                    (mapcar (compose (lambda (body) `(,args ,body)) #'third) bodies))))
+                                                :collect `(,args ,(third bodies) ,(fourth bodies))))
+                                    (mapcar (lambda (body) `(,args ,(third body) ,(fourth body))) bodies))))
                             (sort arg-groups #'> :key (compose #'length #'first))))
           :collect `(defun ,name (&key ,@(mapcar (lambda (arg) `(,arg :unspecified))
-                                                 (remove-duplicates (loop :for (args body) :in arg-groups
+                                                 (remove-duplicates (loop :for (args doc body) :in arg-groups
+                                                                          :do (list 'ignorable doc body)
                                                                           :append args))))
+              ,(with-output-to-string (stream)
+                         (loop :for (args doc body) :in arg-groups
+                               :do (list 'ignore args body)
+                               :do (write-line doc stream)))
                       (cond
                         ,@(mapcar (lambda (arg-group)
-                                    (destructuring-bind (args body) arg-group
+                                    (destructuring-bind (args doc body) arg-group
+                                      (declare (ignorable doc))
                                       `((not (or ,@(mapcar (lambda (arg) `(eql ,arg :unspecified)) args))) ,body)))
                                   arg-groups)
                         (t (error "Invalid arguments for constructor ~A" ',name))))
@@ -227,6 +251,7 @@
 (defun transform-class-function-desc (desc &optional (namespace *namespace*) (class *class*))
   (catch 'skip
     (let* ((info (gir::info-of desc))
+           (doc (prin1-to-string desc))
            (name (nstring-upcase (underscores->lisp-name (gir:info-get-name info))))
            (symbol (intern name))
            (args (mapcar (lambda (desc)
@@ -253,25 +278,27 @@
                               :finally (return #'identity)))
            (proc-ret-fn (if (and (eq (car ret-types) :void) (cdr ret-types))
                             (lambda (body)
-                              (let ((syms (loop :for tpe :in ret-types :collect (gensym))))
+                              (let ((syms (loop :for type :in ret-types :collect (gensym))))
                                 `(multiple-value-bind ,syms ,body
                                    (declare (ignore ,(car syms)))
                                    (values . ,(cdr syms)))))
                             #'identity)))
       (if-let ((name-symbol (quoted-name-symbol (cons class (gir:info-get-name info)))))
-        `(defun ,name-symbol ,args
+        `(defun ,name-symbol ,args ,doc
            (gir:invoke (,namespace ,class ',symbol) ,@args))
         (cond
           ((and (not args)
                 (when-let ((name (scan-to-string +getter-pattern+ name)))
                   `(defun ,(intern (format nil (if (equal ret-types '(boolean)) "~A-~A-P" "~A-~A") class-name name)) ()
+                     ,doc
                      ,(funcall proc-ret-fn `(gir:invoke (,namespace ,class ',symbol)))))))
           ((and args
                 (when-let ((name (scan-to-string +setter-pattern+ name)))
-                  `(defun (setf ,(intern (format nil (if (eql (car arg-types) 'boolean) "~A-~A-P" "~A-~A") class-name name))) (value)
+                  `(defun (setf ,(intern (format nil (if (eql (car arg-types) 'boolean) "~A-~A-P" "~A-~A") class-name name))) (value) ,doc
                      (,@(if (cdr args) `(destructuring-bind ,args value) `(symbol-macrolet ((,(car args) value))))
                       ,(funcall proc-ret-fn `(gir:invoke (,namespace ,class ',symbol) ,@args)))))))
           (t `(defun ,(intern (format nil "~A-~A" class-name name)) ,(funcall proc-arg-fn args)
+                ,doc
                 ,(funcall proc-ret-fn `(gir:invoke (,namespace ,class ',symbol) ,@args)))))))))
 
 (defun transform-function-desc (desc &optional (namespace *namespace*) (class *class*))
@@ -279,6 +306,7 @@
   (catch 'skip
     (let* ((info (gir::info-of desc))
            (name (nstring-upcase (underscores->lisp-name (gir:info-get-name info))))
+           (doc (prin1-to-string desc))
            (symbol (intern name))
            (args (mapcar (lambda (desc)
                            (let ((name (gir:name-of desc)))
@@ -288,19 +316,22 @@
            (arg-types (mapcar #'gir:type-desc-of (gir::arguments-desc-of desc)))
            (ret-type (gir:type-desc-of (car (gir::returns-desc-of desc)))))
       (if-let ((name-symbol (quoted-name-symbol (gir:info-get-name info))))
-        `(defun ,name-symbol ,args
+        `(defun ,name-symbol ,args ,doc
            (gir:invoke (,namespace ',symbol) ,@args))
         (cond
           ((and (not args)
                 (when-let ((name (scan-to-string +getter-pattern+ name)))
                   `(defun ,(intern (format nil (if (eql ret-type 'boolean) "~A-P" "~A") name)) ()
+                     ,doc
                      (gir:invoke (,namespace ',symbol))))))
           ((and args
                 (when-let ((name (scan-to-string +setter-pattern+ name)))
                   `(defun (setf ,(intern (format nil (if (eql (car arg-types) 'boolean) "~A-P" "~A") name))) (value)
+                     ,doc
                      (,@(if (cdr args) `(destructuring-bind ,args value) `(symbol-macrolet ((,(car args) value))))
                       (gir:invoke (,namespace ',symbol) ,@args))))))
           (t `(defun ,(intern (format nil "~A" name)) ,args
+                ,doc
                 (gir:invoke (,namespace ',symbol) ,@args))))))))
 
 (defun transform-enum-desc (desc &optional (namespace *namespace*) (class *class*))
