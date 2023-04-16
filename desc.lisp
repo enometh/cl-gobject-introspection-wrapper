@@ -237,7 +237,7 @@
               ,(with-output-to-string (stream)
                          (loop :for (args doc body) :in arg-groups
                                :do (list 'ignore args body)
-                               :do (write-line doc stream)))
+                               :do (and doc (write-line doc stream))))
                       (cond
                         ,@(mapcar (lambda (arg-group)
                                     (destructuring-bind (args doc body) arg-group
